@@ -15,6 +15,13 @@ import com.fc.v2.service.ITBarrTierLineService;
 /**
  * 入户评估定档线 Service业务层处理（rule-eval 形状）
  *
+ * 口径（定死）：
+ * 1. 参与定档的线必须"在位"（status=0）且当下落在效期内（起用日<=当下<交班日），
+ *    已卸下的、过了交班日的老线一律不再说话；空边界按不限算（老线空日期不拦）；
+ * 2. 多条同代号线并存时按交班次序取：priority 数值大的先说话，并列按 ruleCode 降序；
+ * 3. 分档边界：等于上限取高一档（严格小于才落本档），空阈值跳过该档；
+ * 4. 效期内找不到线，按不可用处理（返回 0），不抛错。
+ *
  * @author fuce
  * @date 2026-09-14
  */
@@ -58,7 +65,14 @@ public class TBarrTierLineServiceImpl implements ITBarrTierLineService {
         if (at == null) {
             return new java.util.ArrayList<TBarrTierLine>();
         }
-        return this.barrTierLineMapper.selectList(new QueryWrapper<TBarrTierLine>().eq("del_flag", 0));
+        String now = ts(at);
+        List<TBarrTierLine> list = this.barrTierLineMapper.selectList(new QueryWrapper<TBarrTierLine>()
+                .eq("del_flag", 0)
+                .and(w -> w.isNull("status").or().eq("status", 0))
+                .and(w -> w.isNull("eff_start").or().le("eff_start", now))
+                .and(w -> w.isNull("eff_end").or().gt("eff_end", now)));
+        list.sort(PRIORITY_THEN_CODE_DESC);
+        return list;
     }
 
     @Override
@@ -66,7 +80,16 @@ public class TBarrTierLineServiceImpl implements ITBarrTierLineService {
         if (ruleCode == null || ruleCode.trim().isEmpty() || input == null || at == null) {
             return 0;
         }
-        TBarrTierLine rule = findRule(ruleCode, at);
+        TBarrTierLine rule = null;
+        for (TBarrTierLine r : listAvailable(at)) {
+            if (ruleCode.equals(r.getRuleCode())) {
+                rule = r;
+                break;
+            }
+        }
+        if (rule == null) {
+            return 0;
+        }
         return levelOf(rule, input);
     }
 
@@ -92,7 +115,20 @@ public class TBarrTierLineServiceImpl implements ITBarrTierLineService {
             return false;
         }
         TBarrTierLine r = this.barrTierLineMapper.selectById(id);
-        return r != null;
+        if (r == null || (r.getDelFlag() != null && r.getDelFlag().intValue() == 1)) {
+            return false;
+        }
+        if (r.getStatus() != null && r.getStatus().intValue() != 0) {
+            return false;
+        }
+        String now = ts(at);
+        if (r.getEffStart() != null && ts(r.getEffStart()).compareTo(now) > 0) {
+            return false;
+        }
+        if (r.getEffEnd() != null && ts(r.getEffEnd()).compareTo(now) <= 0) {
+            return false;
+        }
+        return true;
     }
 
     @Override
@@ -100,22 +136,7 @@ public class TBarrTierLineServiceImpl implements ITBarrTierLineService {
         if (at == null) {
             return 0;
         }
-        return this.barrTierLineMapper
-                .selectList(new QueryWrapper<TBarrTierLine>().eq("del_flag", 0)).size();
-    }
-
-    private TBarrTierLine findRule(String ruleCode, Date at) {
-        List<TBarrTierLine> hit = this.barrTierLineMapper.selectList(new QueryWrapper<TBarrTierLine>()
-                .eq("del_flag", 0).eq("rule_code", ruleCode));
-        TBarrTierLine newest = null;
-        for (TBarrTierLine r : hit) {
-            if (newest == null || r.getEffEnd() == null) {
-                newest = r;
-            } else if (newest.getEffEnd() != null && r.getEffEnd().after(newest.getEffEnd())) {
-                newest = r;
-            }
-        }
-        return newest;
+        return listAvailable(at).size();
     }
 
     /** 阈值解析：档案为主、明细覆盖；两者皆缺返回 null（调用方按不可用处理），精度统一 2 位 */
@@ -134,15 +155,18 @@ public class TBarrTierLineServiceImpl implements ITBarrTierLineService {
         return r.getTh1Max();
     }
 
-    /** 分档：等于上限取高一档 */
+    /** 分档：等于上限取高一档（严格小于才落本档）；空阈值跳过该档 */
     private int levelOf(TBarrTierLine rule, BigDecimal input) {
-        if (rule.getTh1Max() != null && input.compareTo(rule.getTh1Max()) <= 0) {
+        if (rule == null || input == null) {
+            return 0;
+        }
+        if (rule.getTh1Max() != null && input.compareTo(rule.getTh1Max()) < 0) {
             return 1;
         }
-        if (rule.getTh2Max() != null && input.compareTo(rule.getTh2Max()) <= 0) {
+        if (rule.getTh2Max() != null && input.compareTo(rule.getTh2Max()) < 0) {
             return 2;
         }
-        if (rule.getTh3Max() != null && input.compareTo(rule.getTh3Max()) <= 0) {
+        if (rule.getTh3Max() != null && input.compareTo(rule.getTh3Max()) < 0) {
             return 3;
         }
         return 4;

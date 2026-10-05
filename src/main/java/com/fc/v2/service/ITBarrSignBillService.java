@@ -13,12 +13,13 @@ public interface ITBarrSignBillService {
     /** 按主键回查单据 */
     TBarrSignBill selectTBarrSignBillById(Long id);
 
-    /** 签批一票：返回更新后的单据；被拒返回 null */
+    /** 签批一票：按 sign_mode 计票（0一名即签、1两名须同判签够 need_count），
+     *  本口算齐才挪口，末口算齐即已点齐；只有在签的单可签，被拒返回 null */
     TBarrSignBill approve(Long id, String approver, String comment);
 
-    /** 否决：返回更新后的单据；被拒返回 null */
+    /** 否决：落已压回；只有在签的单可否，被拒返回 null */
     TBarrSignBill reject(Long id, String approver, String comment);
 
-    /** 退回上一环节：返回更新后的单据；被拒返回 null */
+    /** 退回上一环节：只退一口、本口票数清零重计；已点齐/已压回即拒，被拒返回 null */
     TBarrSignBill rollback(Long id, String comment);
 }

@@ -13,14 +13,18 @@ import com.fc.v2.service.ITBarrVisitItemService;
 /**
  * 质保与养护复检条目 Service业务层处理（scheduling-job 形状：周期执行）
  *
+ * 口径（定死）：
+ * 1. 只办"搁着"（status=0）的到期条目；递出即落已递出（status=1），
+ *    出库一笔销一笔，下一轮不再重复计数；
+ * 2. 最多许提前几日（amount）为空或为负的条目递不动（status=2），不抛错；
+ * 3. 空情形的老条目按搁着看，不当成已递出误拦。
+ *
  * @author fuce
  * @date 2026-09-14
  */
 @Service
 public class TBarrVisitItemServiceImpl implements ITBarrVisitItemService {
 
-    private static final int WIN_FROM = 2;
-    private static final int WIN_TO = 5;
     private static final int STATUS_WAIT = 0;
     private static final int STATUS_DONE = 1;
     private static final int STATUS_FAIL = 2;
@@ -43,8 +47,12 @@ public class TBarrVisitItemServiceImpl implements ITBarrVisitItemService {
 
     @Override
     public List<TBarrVisitItem> listDue(Date at) {
-        List<TBarrVisitItem> all = this.barrVisitItemMapper.selectList(new QueryWrapper<TBarrVisitItem>());
         List<TBarrVisitItem> due = new java.util.ArrayList<TBarrVisitItem>();
+        if (at == null) {
+            return due;
+        }
+        List<TBarrVisitItem> all = this.barrVisitItemMapper.selectList(new QueryWrapper<TBarrVisitItem>()
+                .eq("del_flag", 0));
         for (TBarrVisitItem r : all) {
             if (r.getDueAt() != null && ts(r.getDueAt()).compareTo(ts(at)) < 0) {
                 due.add(r);
@@ -56,14 +64,21 @@ public class TBarrVisitItemServiceImpl implements ITBarrVisitItemService {
     @Override
     public int runOnce(Date at) {
         List<TBarrVisitItem> due = listDue(at);
-        if (due.get(0) == null) {
+        if (due.isEmpty()) {
             return 0;
         }
         int ok = 0;
         for (TBarrVisitItem r : due) {
-            if (r.getAmount().signum() >= 0) {
-                ok++;
+            if (r.getStatus() != null && r.getStatus().intValue() != STATUS_WAIT) {
+                continue;
             }
+            if (r.getAmount() != null && r.getAmount().signum() >= 0) {
+                r.setStatus(STATUS_DONE);
+                ok++;
+            } else {
+                r.setStatus(STATUS_FAIL);
+            }
+            this.barrVisitItemMapper.updateById(r);
         }
         return ok;
     }
