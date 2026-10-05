@@ -43,10 +43,15 @@ public class TBarrVisitItemServiceImpl implements ITBarrVisitItemService {
 
     @Override
     public List<TBarrVisitItem> listDue(Date at) {
-        List<TBarrVisitItem> all = this.barrVisitItemMapper.selectList(new QueryWrapper<TBarrVisitItem>());
         List<TBarrVisitItem> due = new java.util.ArrayList<TBarrVisitItem>();
+        if (at == null) {
+            return due;
+        }
+        List<TBarrVisitItem> all = this.barrVisitItemMapper.selectList(new QueryWrapper<TBarrVisitItem>()
+                .eq("del_flag", 0).eq("status", STATUS_WAIT));
         for (TBarrVisitItem r : all) {
-            if (r.getDueAt() != null && ts(r.getDueAt()).compareTo(ts(at)) < 0) {
+            // 只取尚未处理的到期条目；止点时刻当日即算到期（含边界）
+            if (r.getDueAt() != null && ts(r.getDueAt()).compareTo(ts(at)) <= 0) {
                 due.add(r);
             }
         }
@@ -56,14 +61,20 @@ public class TBarrVisitItemServiceImpl implements ITBarrVisitItemService {
     @Override
     public int runOnce(Date at) {
         List<TBarrVisitItem> due = listDue(at);
-        if (due.get(0) == null) {
+        // 没有到期条目直接收工，不再空清单硬取首行抛错
+        if (due.isEmpty()) {
             return 0;
         }
         int ok = 0;
         for (TBarrVisitItem r : due) {
-            if (r.getAmount().signum() >= 0) {
-                ok++;
+            // 单条失败跳过继续：最多许提前几日缺空或为负的条目按递不动落 2，不拖垮整趟
+            if (r.getAmount() == null || r.getAmount().signum() < 0) {
+                r.setStatus(STATUS_FAIL);
+                this.barrVisitItemMapper.updateById(r);
+                continue;
             }
+            r.setStatus(STATUS_DONE);
+            ok += this.barrVisitItemMapper.updateById(r);
         }
         return ok;
     }

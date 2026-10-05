@@ -19,10 +19,10 @@ public interface ITBarrCaseFlowService {
     /** 列表查询（流转台账） */
     List<TBarrCaseFlow> selectTBarrCaseFlowList(QueryWrapper<TBarrCaseFlow> queryWrapper);
 
-    /** 推进一档：返回更新后的单据；被拒返回 null */
+    /** 推进一档（一次只挪一格）；挪到结清格即封住收口；已封住被拒返回 null */
     TBarrCaseFlow advance(Long id, String remark);
 
-    /** 回退一档：返回更新后的单据；被拒返回 null */
+    /** 回退一档（只退一格，先前格次与记录留痕不抹平）；已封住被拒返回 null */
     TBarrCaseFlow rollback(Long id, String remark);
 
     /** 修改内容：已办结不得再改，被拒返回 false */

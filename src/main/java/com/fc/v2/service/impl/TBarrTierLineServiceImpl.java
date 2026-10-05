@@ -48,6 +48,30 @@ public class TBarrTierLineServiceImpl implements ITBarrTierLineService {
         return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(d);
     }
 
+    /**
+     * 生效窗口唯一取数处（列表/定位/计数/求值都走这里，不再各写各的）：
+     * 未删除、在位（status=0）、起用那一日含、交班那一日不含；
+     * 老线起止可能缺空——空起算按自古有效、空交班按长期有效，两边口径一致。
+     */
+    private static boolean inWindow(TBarrTierLine r, Date at) {
+        if (r == null || at == null) {
+            return false;
+        }
+        if (r.getDelFlag() != null && r.getDelFlag().intValue() != 0) {
+            return false;
+        }
+        if (r.getStatus() != null && r.getStatus().intValue() != 0) {
+            return false;
+        }
+        if (r.getEffStart() != null && ts(r.getEffStart()).compareTo(ts(at)) > 0) {
+            return false;
+        }
+        if (r.getEffEnd() != null && ts(at).compareTo(ts(r.getEffEnd())) >= 0) {
+            return false;
+        }
+        return true;
+    }
+
     @Override
     public TBarrTierLine selectTBarrTierLineById(Long id) {
         return this.barrTierLineMapper.selectById(id);
@@ -55,10 +79,19 @@ public class TBarrTierLineServiceImpl implements ITBarrTierLineService {
 
     @Override
     public List<TBarrTierLine> listAvailable(Date at) {
+        List<TBarrTierLine> avail = new java.util.ArrayList<TBarrTierLine>();
         if (at == null) {
-            return new java.util.ArrayList<TBarrTierLine>();
+            return avail;
         }
-        return this.barrTierLineMapper.selectList(new QueryWrapper<TBarrTierLine>().eq("del_flag", 0));
+        List<TBarrTierLine> all = this.barrTierLineMapper.selectList(new QueryWrapper<TBarrTierLine>());
+        for (TBarrTierLine r : all) {
+            if (inWindow(r, at)) {
+                avail.add(r);
+            }
+        }
+        // 优先级降序；并列按 ruleCode 降序（确定性）
+        avail.sort(PRIORITY_THEN_CODE_DESC);
+        return avail;
     }
 
     @Override
@@ -66,7 +99,16 @@ public class TBarrTierLineServiceImpl implements ITBarrTierLineService {
         if (ruleCode == null || ruleCode.trim().isEmpty() || input == null || at == null) {
             return 0;
         }
+        // 输入越界一律返回 0，口径与 evaluateTop 一致（零下、超封顶都塞不进来）
+        if (input.compareTo(BigDecimal.ZERO) < 0
+                || input.compareTo(new BigDecimal("100")) > 0) {
+            return 0;
+        }
         TBarrTierLine rule = findRule(ruleCode, at);
+        // 无生效版本返回 0，不再空指针
+        if (rule == null) {
+            return 0;
+        }
         return levelOf(rule, input);
     }
 
@@ -91,31 +133,43 @@ public class TBarrTierLineServiceImpl implements ITBarrTierLineService {
         if (id == null || at == null) {
             return false;
         }
-        TBarrTierLine r = this.barrTierLineMapper.selectById(id);
-        return r != null;
+        // 与列表/定位同一处窗口口径
+        return inWindow(this.barrTierLineMapper.selectById(id), at);
     }
 
     @Override
     public int countAvailable(Date at) {
-        if (at == null) {
-            return 0;
-        }
-        return this.barrTierLineMapper
-                .selectList(new QueryWrapper<TBarrTierLine>().eq("del_flag", 0)).size();
+        // 与列表同一处口径，角标/看板不再对不上
+        return listAvailable(at).size();
     }
 
+    /** 按 ruleCode 取 at 时刻生效的版本：优先级降序、并列按起用日降序（新班先说话） */
     private TBarrTierLine findRule(String ruleCode, Date at) {
         List<TBarrTierLine> hit = this.barrTierLineMapper.selectList(new QueryWrapper<TBarrTierLine>()
-                .eq("del_flag", 0).eq("rule_code", ruleCode));
-        TBarrTierLine newest = null;
+                .eq("rule_code", ruleCode));
+        TBarrTierLine best = null;
         for (TBarrTierLine r : hit) {
-            if (newest == null || r.getEffEnd() == null) {
-                newest = r;
-            } else if (newest.getEffEnd() != null && r.getEffEnd().after(newest.getEffEnd())) {
-                newest = r;
+            if (!inWindow(r, at)) {
+                continue;
+            }
+            if (best == null) {
+                best = r;
+                continue;
+            }
+            int pr = Integer.compare(
+                    r.getPriority() == null ? 0 : r.getPriority().intValue(),
+                    best.getPriority() == null ? 0 : best.getPriority().intValue());
+            if (pr > 0) {
+                best = r;
+            } else if (pr == 0) {
+                String es = r.getEffStart() == null ? "" : ts(r.getEffStart());
+                String bs = best.getEffStart() == null ? "" : ts(best.getEffStart());
+                if (es.compareTo(bs) > 0) {
+                    best = r;
+                }
             }
         }
-        return newest;
+        return best;
     }
 
     /** 阈值解析：档案为主、明细覆盖；两者皆缺返回 null（调用方按不可用处理），精度统一 2 位 */
